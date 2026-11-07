@@ -300,3 +300,14 @@ jobs:
             out/reports/*.txt
           if-no-files-found: error
           retention-days: 7
+
+      - name: Export stock U6 kernel and DTB
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-u6-kernel-dtb
+          path: |
+            out/kernel
+            out/dtb
+          if-no-files-found: error
+          compression-level: 0
+
