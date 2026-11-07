@@ -30,6 +30,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p firmware
+
           gh release download u6-recovery-base \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "*.img" \
@@ -59,21 +60,30 @@ jobs:
         run: |
           echo "=== KERNEL ==="
           sha256sum out/recovery/kernel out/boot/kernel
-          cmp -s out/recovery/kernel out/boot/kernel \
-            && echo "RESULT: IDENTICAL" \
-            || echo "RESULT: DIFFERENT"
+
+          if cmp -s out/recovery/kernel out/boot/kernel; then
+            echo "RESULT: KERNEL IDENTICAL"
+          else
+            echo "RESULT: KERNEL DIFFERENT"
+          fi
 
           echo "=== DTB ==="
           sha256sum out/recovery/dtb out/boot/dtb
-          cmp -s out/recovery/dtb out/boot/dtb \
-            && echo "RESULT: IDENTICAL" \
-            || echo "RESULT: DIFFERENT"
+
+          if cmp -s out/recovery/dtb out/boot/dtb; then
+            echo "RESULT: DTB IDENTICAL"
+          else
+            echo "RESULT: DTB DIFFERENT"
+          fi
 
           echo "=== DTBO ==="
           sha256sum out/recovery/recovery_dtbo firmware/dtbo.img
-          cmp -s out/recovery/recovery_dtbo firmware/dtbo.img \
-            && echo "RESULT: IDENTICAL" \
-            || echo "RESULT: DIFFERENT"
+
+          if cmp -s out/recovery/recovery_dtbo firmware/dtbo.img; then
+            echo "RESULT: DTBO IDENTICAL"
+          else
+            echo "RESULT: DTBO DIFFERENT"
+          fi
 
       - name: Inspect image formats
         run: |
@@ -111,6 +121,7 @@ jobs:
 
           for path in files:
               data = path.read_bytes()
+
               print(f"\n=== {path} ===")
               print("Size:", len(data))
               print("Magic:", data[:4].hex())
@@ -120,7 +131,17 @@ jobs:
                   continue
 
               values = struct.unpack(">8I", data[:32])
-              magic, total, header_size, entry_size, count, entries_offset, page_size, version = values
+
+              (
+                  magic,
+                  total,
+                  header_size,
+                  entry_size,
+                  count,
+                  entries_offset,
+                  page_size,
+                  version
+              ) = values
 
               print("Magic:", hex(magic))
               print("Total size:", total)
@@ -142,17 +163,22 @@ jobs:
                       print("Entry exceeds file boundary")
                       break
 
-                  entry = struct.unpack(">8I", data[pos:pos+32])
+                  entry = struct.unpack(
+                      ">8I",
+                      data[pos:pos + 32]
+                  )
+
                   print(
-                      f"Entry {i}: size={entry[0]}, "
-                      f"offset={entry[1]}, id={entry[4]}, rev={entry[5]}"
+                      f"Entry {i}: "
+                      f"size={entry[0]}, "
+                      f"offset={entry[1]}, "
+                      f"id={entry[4]}, "
+                      f"rev={entry[5]}"
                   )
           PY
 
-      - name: Extract recovery ramdisk
+      - name: Prepare ramdisk extraction
         run: |
-          set -e
-
           mkdir -p out/ramdisk/recovery out/ramdisk/boot
 
           python3 - <<'PY'
@@ -160,18 +186,29 @@ jobs:
 
           for name in ("recovery", "boot"):
               data = Path(f"out/{name}/ramdisk").read_bytes()
-              Path(f"out/ramdisk/{name}.compressed").write_bytes(data)
+
+              output = Path(f"out/ramdisk/{name}.compressed")
+              output.write_bytes(data)
+
               print(
                   name,
-                  "ramdisk size:", len(data),
+                  "size:", len(data),
                   "magic:", data[:8].hex()
               )
           PY
 
+      - name: Extract recovery and boot ramdisk
+        run: |
+          set -e
+
           extract_ramdisk() {
             input="$1"
             output="$2"
+
+            mkdir -p "$output"
             magic=$(xxd -p -l 6 "$input")
+
+            echo "=== EXTRACTING $input ==="
 
             case "$magic" in
               1f8b*)
@@ -206,23 +243,51 @@ jobs:
             out/ramdisk/boot.compressed \
             out/ramdisk/boot
 
+      - name: Normalize ramdisk permissions
+        run: |
+          echo "=== FIX RAMDISK OWNERSHIP ==="
+
+          sudo chown -R "$(id -u):$(id -g)" \
+            out/ramdisk/recovery \
+            out/ramdisk/boot
+
+          echo "=== FIX DIRECTORY PERMISSIONS ==="
+
+          sudo find out/ramdisk/recovery out/ramdisk/boot \
+            -type d -exec chmod 755 {} +
+
+          echo "=== FIX FILE PERMISSIONS ==="
+
+          sudo find out/ramdisk/recovery out/ramdisk/boot \
+            -type f -exec chmod 644 {} +
+
+          echo "=== CHECK DIRECTORY D ==="
+          sudo ls -ld out/ramdisk/recovery/d || true
+          sudo stat out/ramdisk/recovery/d || true
+
       - name: Inspect recovery configuration
         run: |
-          echo "=== FIX EXTRACTED RAMDISK PERMISSIONS ==="
-          chmod -R u+rwX out/ramdisk/recovery out/ramdisk/boot
+          set -e
 
           {
             echo "=== RECOVERY FILE TREE ==="
-            find out/ramdisk/recovery -maxdepth 4 -type f | sort
+
+            sudo find out/ramdisk/recovery \
+              -maxdepth 4 -type f | sort
 
             echo "=== FSTAB FILES ==="
-            find out/ramdisk/recovery -iname '*fstab*' -type f
+
+            sudo find out/ramdisk/recovery \
+              -iname '*fstab*' -type f
 
             echo "=== INIT FILES ==="
-            find out/ramdisk/recovery -iname 'init*' -type f
+
+            sudo find out/ramdisk/recovery \
+              -iname 'init*' -type f
 
             echo "=== RECOVERY CONFIG REFERENCES ==="
-            grep -RniE \
+
+            sudo grep -RniE \
               'twrp|recovery|crypto|encrypt|metadata|userdata|system|vendor|super|by-name' \
               out/ramdisk/recovery \
               --include='*.rc' \
