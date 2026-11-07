@@ -85,3 +85,21 @@ jobs:
             firmware/
             out/
           if-no-files-found: error
+      - name: Inspect DTBO and ramdisk formats
+        run: |
+          echo "=== FILE TYPES ==="
+          file firmware/dtbo.img
+          file out/recovery/recovery_dtbo
+          file out/recovery/ramdisk
+          file out/boot/ramdisk
+
+          echo "=== DTBO HEADERS ==="
+          xxd -l 64 firmware/dtbo.img
+          xxd -l 64 out/recovery/recovery_dtbo
+
+          echo "=== RAMDISK HEADERS ==="
+          xxd -l 32 out/recovery/ramdisk
+          xxd -l 32 out/boot/ramdisk
+
+          echo "=== RAMDISK HASHES ==="
+          sha256sum out/recovery/ramdisk out/boot/ramdisk
