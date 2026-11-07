@@ -155,6 +155,30 @@ jobs:
               out/ramdisk-work/recovery/prop.default || true
           } | tee out/reports/next-inspection.txt
 
+      - name: Inspect MTK binaries
+        run: |
+          {
+            echo "=== ODM BIN DIRECTORY ==="
+            ls -lad out/ramdisk-work/recovery/odm/bin
+            readlink out/ramdisk-work/recovery/odm/bin || true
+            readlink -f out/ramdisk-work/recovery/odm/bin || true
+
+            echo
+            echo "=== MTK UTILITY SEARCH ==="
+            find -L out/ramdisk-work/recovery \
+              \( -name 'mtk_plpath_utils' -o -name '*plpath*' \) \
+              -print 2>/dev/null
+
+            echo
+            echo "=== SYSTEM BIN MTK FILES ==="
+            find out/ramdisk-work/recovery/system/bin \
+              -maxdepth 1 -iname '*mtk*' -print
+
+            echo
+            echo "=== ODM BIN CONTENTS ==="
+            ls -laL out/ramdisk-work/recovery/odm/bin/ || true
+          } | tee out/reports/mtk-binary-inspection.txt
+          
       - name: Inspect recovery ramdisk
         run: |
           {
