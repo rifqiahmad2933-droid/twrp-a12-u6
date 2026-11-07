@@ -1,3 +1,4 @@
+
 name: Audit A12 U6 Firmware
 
 on:
@@ -8,18 +9,20 @@ permissions:
 
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Download U6 firmware images
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir firmware
+          mkdir -p firmware
           gh release download u6-recovery-base \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "*.img" \
             --dir firmware
+
+          echo "=== FIRMWARE FILES ==="
           ls -lh firmware
 
       - name: Get Android boot image tools
@@ -29,6 +32,8 @@ jobs:
 
       - name: Extract recovery and boot
         run: |
+          mkdir -p out/recovery out/boot
+
           python3 mkbootimg/unpack_bootimg.py \
             --boot_img firmware/recovery.img \
             --out out/recovery
@@ -39,14 +44,38 @@ jobs:
 
       - name: Compare extracted components
         run: |
-          echo "=== RECOVERY ==="
+          echo "=== RECOVERY COMPONENTS ==="
           ls -lh out/recovery
-          echo "=== BOOT ==="
+
+          echo "=== BOOT COMPONENTS ==="
           ls -lh out/boot
+
           echo "=== KERNEL HASHES ==="
           sha256sum out/recovery/kernel out/boot/kernel
-          echo "=== DTBO ==="
-          sha256sum firmware/dtbo.img
+
+          if cmp -s out/recovery/kernel out/boot/kernel; then
+            echo "RESULT: KERNEL IDENTICAL"
+          else
+            echo "RESULT: KERNEL DIFFERENT"
+          fi
+
+          echo "=== DTB HASHES ==="
+          sha256sum out/recovery/dtb out/boot/dtb
+
+          if cmp -s out/recovery/dtb out/boot/dtb; then
+            echo "RESULT: DTB IDENTICAL"
+          else
+            echo "RESULT: DTB DIFFERENT"
+          fi
+
+          echo "=== DTBO HASHES ==="
+          sha256sum out/recovery/recovery_dtbo firmware/dtbo.img
+
+          if cmp -s out/recovery/recovery_dtbo firmware/dtbo.img; then
+            echo "RESULT: DTBO IDENTICAL"
+          else
+            echo "RESULT: DTBO DIFFERENT"
+          fi
 
       - name: Save audit results
         uses: actions/upload-artifact@v4
@@ -55,3 +84,4 @@ jobs:
           path: |
             firmware/
             out/
+          if-no-files-found: error
