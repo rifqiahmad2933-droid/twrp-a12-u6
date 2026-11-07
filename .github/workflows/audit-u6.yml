@@ -12,6 +12,19 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      - name: Install inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            device-tree-compiler \
+            lz4 \
+            cpio \
+            gzip \
+            zstd \
+            xz-utils \
+            file \
+            python3
+
       - name: Download U6 firmware images
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,40 +55,162 @@ jobs:
             --boot_img firmware/boot.img \
             --out out/boot
 
-      - name: Compare extracted components
+      - name: Compare stock components
         run: |
-          echo "=== RECOVERY COMPONENTS ==="
-          ls -lh out/recovery
-
-          echo "=== BOOT COMPONENTS ==="
-          ls -lh out/boot
-
-          echo "=== KERNEL HASHES ==="
+          echo "=== KERNEL ==="
           sha256sum out/recovery/kernel out/boot/kernel
+          cmp -s out/recovery/kernel out/boot/kernel \
+            && echo "RESULT: IDENTICAL" \
+            || echo "RESULT: DIFFERENT"
 
-          if cmp -s out/recovery/kernel out/boot/kernel; then
-            echo "RESULT: KERNEL IDENTICAL"
-          else
-            echo "RESULT: KERNEL DIFFERENT"
-          fi
-
-          echo "=== DTB HASHES ==="
+          echo "=== DTB ==="
           sha256sum out/recovery/dtb out/boot/dtb
+          cmp -s out/recovery/dtb out/boot/dtb \
+            && echo "RESULT: IDENTICAL" \
+            || echo "RESULT: DIFFERENT"
 
-          if cmp -s out/recovery/dtb out/boot/dtb; then
-            echo "RESULT: DTB IDENTICAL"
-          else
-            echo "RESULT: DTB DIFFERENT"
-          fi
-
-          echo "=== DTBO HASHES ==="
+          echo "=== DTBO ==="
           sha256sum out/recovery/recovery_dtbo firmware/dtbo.img
+          cmp -s out/recovery/recovery_dtbo firmware/dtbo.img \
+            && echo "RESULT: IDENTICAL" \
+            || echo "RESULT: DIFFERENT"
 
-          if cmp -s out/recovery/recovery_dtbo firmware/dtbo.img; then
-            echo "RESULT: DTBO IDENTICAL"
-          else
-            echo "RESULT: DTBO DIFFERENT"
-          fi
+      - name: Inspect image formats
+        run: |
+          mkdir -p out/reports
+
+          {
+            echo "=== FILE TYPES ==="
+            file firmware/dtbo.img
+            file out/recovery/recovery_dtbo
+            file out/recovery/ramdisk
+            file out/boot/ramdisk
+
+            echo "=== DTBO HEADERS ==="
+            xxd -l 64 firmware/dtbo.img
+            xxd -l 64 out/recovery/recovery_dtbo
+
+            echo "=== RAMDISK HEADERS ==="
+            xxd -l 32 out/recovery/ramdisk
+            xxd -l 32 out/boot/ramdisk
+
+            echo "=== RAMDISK HASHES ==="
+            sha256sum out/recovery/ramdisk out/boot/ramdisk
+          } | tee out/reports/image-formats.txt
+
+      - name: Inspect DTBO structure
+        run: |
+          python3 - <<'PY' | tee out/reports/dtbo-inspection.txt
+          import struct
+          from pathlib import Path
+
+          files = [
+              Path("firmware/dtbo.img"),
+              Path("out/recovery/recovery_dtbo")
+          ]
+
+          for path in files:
+              data = path.read_bytes()
+              print(f"\n=== {path} ===")
+              print("Size:", len(data))
+              print("Magic:", data[:4].hex())
+
+              if len(data) < 32:
+                  print("Too small for DT table header")
+                  continue
+
+              magic, total, header_size, entry_size, count, entries_offset, page_size, version = \
+                  struct.unpack(">8I", data[:32])
+
+              print("Magic:", hex(magic))
+              print("Total size:", total)
+              print("Header size:", header_size)
+              print("Entry size:", entry_size)
+              print("Entry count:", count)
+              print("Entries offset:", entries_offset)
+              print("Page size:", page_size)
+              print("Version:", version)
+
+              if magic != 0xD7B7AB1E:
+                  print("Not an Android DT table header")
+                  continue
+
+              for i in range(min(count, 100)):
+                  pos = entries_offset + i * entry_size
+                  if pos + 32 > len(data):
+                      print("Entry exceeds file boundary")
+                      break
+                  entry = struct.unpack(">8I", data[pos:pos+32])
+                  print(f"Entry {i}: size={entry[0]}, offset={entry[1]}, id={entry[4]}, rev={entry[5]}")
+          PY
+
+      - name: Extract recovery ramdisk
+        run: |
+          set -e
+
+          mkdir -p out/ramdisk/recovery out/ramdisk/boot
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          for name in ("recovery", "boot"):
+              data = Path(f"out/{name}/ramdisk").read_bytes()
+              Path(f"out/ramdisk/{name}.compressed").write_bytes(data)
+              print(name, "ramdisk size:", len(data), "magic:", data[:8].hex())
+          PY
+
+          extract_ramdisk() {
+            input="$1"
+            output="$2"
+            magic=$(xxd -p -l 6 "$input")
+
+            case "$magic" in
+              1f8b*)
+                gzip -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                ;;
+              02214c18*)
+                lz4 -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                ;;
+              28b52ffd*)
+                zstd -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                ;;
+              fd377a585a00*)
+                xz -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                ;;
+              *)
+                echo "Unknown compression: $input"
+                file "$input"
+                return 1
+                ;;
+            esac
+          }
+
+          extract_ramdisk out/ramdisk/recovery.compressed out/ramdisk/recovery
+          extract_ramdisk out/ramdisk/boot.compressed out/ramdisk/boot
+
+      - name: Inspect recovery configuration
+        run: |
+          {
+            echo "=== RECOVERY FILE TREE ==="
+            find out/ramdisk/recovery -maxdepth 4 -type f | sort
+
+            echo "=== FSTAB FILES ==="
+            find out/ramdisk/recovery -iname '*fstab*' -type f
+
+            echo "=== INIT FILES ==="
+            find out/ramdisk/recovery -iname 'init*' -type f
+
+            echo "=== RECOVERY CONFIG REFERENCES ==="
+            grep -RniE \
+              'twrp|recovery|crypto|encrypt|metadata|userdata|system|vendor|super|by-name' \
+              out/ramdisk/recovery \
+              --include='*.rc' \
+              --include='*fstab*' \
+              --include='*.prop' \
+              --include='*.conf' \
+              --include='*.xml' \
+              || true
+          } | tee out/reports/recovery-ramdisk-inspection.txt
 
       - name: Save audit results
         uses: actions/upload-artifact@v4
@@ -85,21 +220,3 @@ jobs:
             firmware/
             out/
           if-no-files-found: error
-      - name: Inspect DTBO and ramdisk formats
-        run: |
-          echo "=== FILE TYPES ==="
-          file firmware/dtbo.img
-          file out/recovery/recovery_dtbo
-          file out/recovery/ramdisk
-          file out/boot/ramdisk
-
-          echo "=== DTBO HEADERS ==="
-          xxd -l 64 firmware/dtbo.img
-          xxd -l 64 out/recovery/recovery_dtbo
-
-          echo "=== RAMDISK HEADERS ==="
-          xxd -l 32 out/recovery/ramdisk
-          xxd -l 32 out/boot/ramdisk
-
-          echo "=== RAMDISK HASHES ==="
-          sha256sum out/recovery/ramdisk out/boot/ramdisk
