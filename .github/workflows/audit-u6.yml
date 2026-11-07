@@ -1,0 +1,57 @@
+name: Audit A12 U6 Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download U6 firmware images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir firmware
+          gh release download u6-recovery-base \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "*.img" \
+            --dir firmware
+          ls -lh firmware
+
+      - name: Get Android boot image tools
+        run: |
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/system/tools/mkbootimg
+
+      - name: Extract recovery and boot
+        run: |
+          python3 mkbootimg/unpack_bootimg.py \
+            --boot_img firmware/recovery.img \
+            --out out/recovery
+
+          python3 mkbootimg/unpack_bootimg.py \
+            --boot_img firmware/boot.img \
+            --out out/boot
+
+      - name: Compare extracted components
+        run: |
+          echo "=== RECOVERY ==="
+          ls -lh out/recovery
+          echo "=== BOOT ==="
+          ls -lh out/boot
+          echo "=== KERNEL HASHES ==="
+          sha256sum out/recovery/kernel out/boot/kernel
+          echo "=== DTBO ==="
+          sha256sum firmware/dtbo.img
+
+      - name: Save audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: a12-u6-audit
+          path: |
+            firmware/
+            out/
