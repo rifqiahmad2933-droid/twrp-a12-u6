@@ -120,7 +120,7 @@ jobs:
           gzip -dc ../../boot/ramdisk | cpio -idm --no-absolute-filenames
           cd ../../..
 
-      - name: Verify DTBO and MTK components
+      - name: Verify DTBO and hardware
         run: |
           {
             echo "=== DTBO EXACT PAYLOAD COMPARISON ==="
@@ -134,22 +134,8 @@ jobs:
             sha256sum out/recovery/recovery_dtbo
 
             echo
-            echo "=== MTK ODM BINARIES ==="
-            if [ -d out/ramdisk-work/recovery/odm/bin ]; then
-              find out/ramdisk-work/recovery/odm/bin \
-                -maxdepth 1 -type f -printf '%f\n' | sort
-            else
-              echo "ODM bin directory not found"
-            fi
-
-            echo
-            echo "=== MTK PATH UTILITY ==="
-            find out/ramdisk-work/recovery \
-              \( -name 'mtk_plpath_utils' -o -name '*plpath*' \)
-
-            echo
             echo "=== HARDWARE PROPERTIES ==="
-            grep -E \
+            grep -hE \
               'ro.hardware=|ro.boot.hardware=|ro.board.platform=|ro.vendor.mediatek.platform=|ro.boot.dynamic_partitions=' \
               out/ramdisk-work/recovery/default.prop \
               out/ramdisk-work/recovery/prop.default || true
@@ -158,49 +144,66 @@ jobs:
       - name: Inspect MTK binaries
         run: |
           {
-            echo "=== ODM BIN DIRECTORY ==="
-            ls -lad out/ramdisk-work/recovery/odm/bin
+            echo "=== ODM BIN SYMLINK ==="
+            ls -lad out/ramdisk-work/recovery/odm/bin || true
             readlink out/ramdisk-work/recovery/odm/bin || true
             readlink -f out/ramdisk-work/recovery/odm/bin || true
+
+            echo
+            echo "=== ALL RECOVERY SYMLINKS ==="
+            find out/ramdisk-work/recovery -type l \
+              -printf '%p -> %l\n' | sort
 
             echo
             echo "=== MTK UTILITY SEARCH ==="
             find -L out/ramdisk-work/recovery \
               \( -name 'mtk_plpath_utils' -o -name '*plpath*' \) \
-              -print 2>/dev/null
+              -print 2>/dev/null || true
 
             echo
             echo "=== SYSTEM BIN MTK FILES ==="
-            find out/ramdisk-work/recovery/system/bin \
-              -maxdepth 1 -iname '*mtk*' -print
+            find -L out/ramdisk-work/recovery/system/bin \
+              -maxdepth 1 -iname '*mtk*' -print 2>/dev/null || true
 
             echo
             echo "=== ODM BIN CONTENTS ==="
-            ls -laL out/ramdisk-work/recovery/odm/bin/ || true
+            ls -laL out/ramdisk-work/recovery/odm/bin/ 2>&1 || true
+
+            echo
+            echo "=== VENDOR ODM BIN CONTENTS ==="
+            ls -laL out/ramdisk-work/recovery/vendor/odm/bin/ 2>&1 || true
           } | tee out/reports/mtk-binary-inspection.txt
-          
+
       - name: Inspect recovery ramdisk
         run: |
           {
             echo "=== RECOVERY FILE TREE ==="
-            find out/ramdisk-work/recovery -maxdepth 4 -type f -o -type l | sort
+            find out/ramdisk-work/recovery \
+              \( -type f -o -type l \) | sort
+
             echo
-            echo "=== FULL RECOVERY FSTAB ==="
+            echo "=== RECOVERY FSTAB ==="
             cat out/ramdisk-work/recovery/system/etc/recovery.fstab
+
             echo
             echo "=== RECOVERY INIT MT6765 ==="
             cat out/ramdisk-work/recovery/init.recovery.mt6765.rc
+
             echo
             echo "=== RECOVERY INIT SAMSUNG ==="
             cat out/ramdisk-work/recovery/init.recovery.samsung.rc
+
             echo
             echo "=== INIT MAIN ==="
             cat out/ramdisk-work/recovery/system/etc/init/hw/init.rc
+
             echo
             echo "=== RECOVERY SELECTED PROPERTIES ==="
-            grep -E \
+            grep -hE \
               'ro.product|ro.vendor.mediatek.platform|ro.build.version|ro.crypto|ro.boot' \
-              out/ramdisk-work/recovery/default.prop || true
+              out/ramdisk-work/recovery/default.prop \
+              out/ramdisk-work/recovery/prop.default || true
+
             echo
             echo "=== FSTAB AND INIT REFERENCES ==="
             grep -RniE \
@@ -208,6 +211,62 @@ jobs:
               out/ramdisk-work/recovery/init.recovery* \
               out/ramdisk-work/recovery/system/etc/recovery.fstab || true
           } | tee out/reports/recovery-ramdisk-inspection.txt
+
+      - name: Inspect DATA encryption
+        run: |
+          {
+            echo "=== DATA FSTAB ENTRIES ==="
+            grep -RniE \
+              'userdata|/data|metadata|fileencryption|metadata_encryption|encryptable|forceencrypt|keydirectory|wrappedkey|quota|fscrypt|f2fs' \
+              out/ramdisk-work/recovery \
+              --include='*fstab*' \
+              --include='*.rc' \
+              --include='*.prop' 2>/dev/null || true
+
+            echo
+            echo "=== CRYPTO PROPERTIES ==="
+            grep -hEi \
+              'crypto|encrypt|fileencryption|metadata|keymaster|gatekeeper|vold' \
+              out/ramdisk-work/recovery/default.prop \
+              out/ramdisk-work/recovery/prop.default 2>/dev/null || true
+
+            echo
+            echo "=== CRYPTO BINARIES ==="
+            for bin in vold fscrypt e2fsck fsck.f2fs \
+              mkfs.f2fs keymaster gatekeeperd; do
+              find -L out/ramdisk-work/recovery/system/bin \
+                out/ramdisk-work/recovery/system/xbin \
+                -maxdepth 2 -name "$bin" -print 2>/dev/null || true
+            done
+
+            echo
+            echo "=== CRYPTO LIBRARIES ==="
+            find -L out/ramdisk-work/recovery/system/lib \
+              out/ramdisk-work/recovery/system/lib64 \
+              -maxdepth 2 -type f \
+              \( -iname '*crypto*' \
+              -o -iname '*keymaster*' \
+              -o -iname '*gatekeeper*' \
+              -o -iname '*fscrypt*' \) \
+              -print 2>/dev/null || true
+
+            echo
+            echo "=== F2FS SUPPORT ==="
+            find -L out/ramdisk-work/recovery/system \
+              -maxdepth 4 -type f \
+              \( -name 'fsck.f2fs' -o -name 'make_f2fs' \
+              -o -name 'resize.f2fs' \) -print 2>/dev/null || true
+
+            echo
+            echo "=== RECOVERY CRYPTO CONFIG REFERENCES ==="
+            grep -RniE \
+              'TW_INCLUDE_CRYPTO|TW_INCLUDE_FBE|TW_INCLUDE_FBE_METADATA_DECRYPT|TW_USE_FSCRYPT_POLICY' \
+              . \
+              --include='*.mk' \
+              --include='*.prop' \
+              --include='*.flags' \
+              --exclude-dir=.git || true
+          } | tee out/reports/data-encryption-inspection.txt
 
       - name: Inspect ramdisk permissions
         run: |
@@ -238,9 +297,6 @@ jobs:
         with:
           name: a12-u6-audit
           path: |
-            firmware/
-            out/boot/
-            out/recovery/
-            out/reports/
+            out/reports/*.txt
           if-no-files-found: error
           retention-days: 7
