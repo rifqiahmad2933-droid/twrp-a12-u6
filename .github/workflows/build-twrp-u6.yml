@@ -1,4 +1,4 @@
-
+```yaml
 name: Build TWRP A12 U6
 
 on:
@@ -19,12 +19,14 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
           df -h
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             repo git openjdk-11-jdk \
             bc bison build-essential \
             ccache curl flex g++-multilib \
@@ -38,6 +40,8 @@ jobs:
             squashfs-tools xsltproc zip \
             zlib1g-dev unzip
 
+          df -h
+
       - name: Initialize TWRP source
         run: |
           mkdir -p "$GITHUB_WORKSPACE/twrp"
@@ -46,23 +50,6 @@ jobs:
           repo init --depth=1 \
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
             -b twrp-12.1
-
-      - name: Clone A12 U6 device tree
-        run: |
-          cd "$GITHUB_WORKSPACE/twrp"
-
-          git clone --depth=1 \
-            -b android-12.1 \
-            https://github.com/rifqiahmad2933-droid/android_device_samsung_a12.git \
-            device/samsung/a12
-
-      - name: Clone A12 kernel repository
-        run: |
-          cd "$GITHUB_WORKSPACE/twrp"
-
-          git clone --depth=1 \
-            https://github.com/edward0181/android_kernel_samsung_a12.git \
-            kernel/samsung/a12
 
       - name: Sync TWRP source
         run: |
@@ -78,6 +65,32 @@ jobs:
             --prune \
             -j2
 
+          df -h
+
+      - name: Clone A12 U6 device tree
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          git clone --depth=1 \
+            -b android-12.1 \
+            https://github.com/rifqiahmad2933-droid/android_device_samsung_a12.git \
+            device/samsung/a12
+
+      - name: Verify device tree prebuilts
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          test -s device/samsung/a12/prebuilt/recovery-kernel
+          test -s device/samsung/a12/prebuilt/recovery-dtb
+          test -s device/samsung/a12/prebuilt/recovery-dtbo
+
+          echo "=== PREBUILT FILES ==="
+          ls -lh device/samsung/a12/prebuilt/
+
+          echo
+          echo "=== DISK SPACE ==="
+          df -h
+
       - name: Build recovery image
         run: |
           cd "$GITHUB_WORKSPACE/twrp"
@@ -89,11 +102,20 @@ jobs:
           lunch twrp_a12-eng
           mka -j2 recoveryimage
 
+      - name: Verify recovery image
+        run: |
+          IMAGE="out/target/product/a12/recovery.img"
+
+          test -s "$IMAGE"
+          ls -lh "$IMAGE"
+          sha256sum "$IMAGE"
+          stat -c "Image size: %s bytes" "$IMAGE"
+
       - name: Upload recovery image
         uses: actions/upload-artifact@v4
         with:
           name: twrp-a12-u6-build
-          path: |
-            twrp/out/target/product/a12/recovery.img
+          path: twrp/out/target/product/a12/recovery.img
           if-no-files-found: error
           retention-days: 7
+```
