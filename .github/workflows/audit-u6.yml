@@ -119,8 +119,8 @@ jobs:
                   print("Too small for DT table header")
                   continue
 
-              magic, total, header_size, entry_size, count, entries_offset, page_size, version = \
-                  struct.unpack(">8I", data[:32])
+              values = struct.unpack(">8I", data[:32])
+              magic, total, header_size, entry_size, count, entries_offset, page_size, version = values
 
               print("Magic:", hex(magic))
               print("Total size:", total)
@@ -137,11 +137,16 @@ jobs:
 
               for i in range(min(count, 100)):
                   pos = entries_offset + i * entry_size
+
                   if pos + 32 > len(data):
                       print("Entry exceeds file boundary")
                       break
+
                   entry = struct.unpack(">8I", data[pos:pos+32])
-                  print(f"Entry {i}: size={entry[0]}, offset={entry[1]}, id={entry[4]}, rev={entry[5]}")
+                  print(
+                      f"Entry {i}: size={entry[0]}, "
+                      f"offset={entry[1]}, id={entry[4]}, rev={entry[5]}"
+                  )
           PY
 
       - name: Extract recovery ramdisk
@@ -156,7 +161,11 @@ jobs:
           for name in ("recovery", "boot"):
               data = Path(f"out/{name}/ramdisk").read_bytes()
               Path(f"out/ramdisk/{name}.compressed").write_bytes(data)
-              print(name, "ramdisk size:", len(data), "magic:", data[:8].hex())
+              print(
+                  name,
+                  "ramdisk size:", len(data),
+                  "magic:", data[:8].hex()
+              )
           PY
 
           extract_ramdisk() {
@@ -166,16 +175,20 @@ jobs:
 
             case "$magic" in
               1f8b*)
-                gzip -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                gzip -dc "$input" |
+                  (cd "$output" && cpio -idm --no-absolute-filenames)
                 ;;
               02214c18*)
-                lz4 -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                lz4 -dc "$input" |
+                  (cd "$output" && cpio -idm --no-absolute-filenames)
                 ;;
               28b52ffd*)
-                zstd -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                zstd -dc "$input" |
+                  (cd "$output" && cpio -idm --no-absolute-filenames)
                 ;;
               fd377a585a00*)
-                xz -dc "$input" | (cd "$output" && cpio -idm --no-absolute-filenames)
+                xz -dc "$input" |
+                  (cd "$output" && cpio -idm --no-absolute-filenames)
                 ;;
               *)
                 echo "Unknown compression: $input"
@@ -185,11 +198,19 @@ jobs:
             esac
           }
 
-          extract_ramdisk out/ramdisk/recovery.compressed out/ramdisk/recovery
-          extract_ramdisk out/ramdisk/boot.compressed out/ramdisk/boot
+          extract_ramdisk \
+            out/ramdisk/recovery.compressed \
+            out/ramdisk/recovery
+
+          extract_ramdisk \
+            out/ramdisk/boot.compressed \
+            out/ramdisk/boot
 
       - name: Inspect recovery configuration
         run: |
+          echo "=== FIX EXTRACTED RAMDISK PERMISSIONS ==="
+          chmod -R u+rwX out/ramdisk/recovery out/ramdisk/boot
+
           {
             echo "=== RECOVERY FILE TREE ==="
             find out/ramdisk/recovery -maxdepth 4 -type f | sort
@@ -213,7 +234,7 @@ jobs:
           } | tee out/reports/recovery-ramdisk-inspection.txt
 
       - name: Save audit results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: a12-u6-audit
           path: |
