@@ -1,4 +1,3 @@
-
       - name: Verify DTBO and MTK components
         run: |
           {
@@ -20,7 +19,7 @@
             echo
             echo "=== MTK PATH UTILITY ==="
             find out/ramdisk-work/recovery \
-              -name 'mtk_plpath_utils' -o -name '*plpath*'
+              \( -name 'mtk_plpath_utils' -o -name '*plpath*' \)
 
             echo
             echo "=== HARDWARE PROPERTIES ==="
