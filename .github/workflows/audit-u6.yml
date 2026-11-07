@@ -1,3 +1,125 @@
+
+name: Audit A12 U6 Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            file lz4 cpio gzip zstd xz-utils \
+            python3 device-tree-compiler \
+            git curl unzip
+
+      - name: Download U6 firmware assets
+        run: |
+          mkdir -p firmware
+          gh release download u6-recovery-base \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir firmware
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Clone Android boot image tools
+        run: |
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_system_tools_mkbootimg.git \
+            tools-mkbootimg
+
+      - name: Unpack stock boot and recovery
+        run: |
+          mkdir -p out/boot out/recovery out/reports
+          python3 tools-mkbootimg/unpack_bootimg.py \
+            --boot_img firmware/boot.img \
+            --out out/boot \
+            --format=mkbootimg
+          python3 tools-mkbootimg/unpack_bootimg.py \
+            --boot_img firmware/recovery.img \
+            --out out/recovery \
+            --format=mkbootimg
+
+      - name: Compare firmware components
+        run: |
+          {
+            echo "=== BOOT COMPONENTS ==="
+            ls -lh out/boot
+            echo
+            echo "=== RECOVERY COMPONENTS ==="
+            ls -lh out/recovery
+            echo
+            echo "=== KERNEL HASHES ==="
+            sha256sum out/boot/kernel out/recovery/kernel
+            if cmp -s out/boot/kernel out/recovery/kernel; then
+              echo "RESULT: KERNEL IDENTICAL"
+            else
+              echo "RESULT: KERNEL DIFFERENT"
+            fi
+            echo
+            echo "=== DTB HASHES ==="
+            sha256sum out/boot/dtb out/recovery/dtb
+            if cmp -s out/boot/dtb out/recovery/dtb; then
+              echo "RESULT: DTB IDENTICAL"
+            else
+              echo "RESULT: DTB DIFFERENT"
+            fi
+            echo
+            echo "=== DTBO HASHES ==="
+            sha256sum firmware/dtbo.img out/recovery/recovery_dtbo
+            echo
+            echo "=== IMAGE HEADERS ==="
+            for img in firmware/boot.img firmware/recovery.img; do
+              echo "--- $img ---"
+              python3 tools-mkbootimg/unpack_bootimg.py \
+                --boot_img "$img" \
+                --format=mkbootimg
+            done
+          } | tee out/reports/component-comparison.txt
+
+      - name: Inspect image formats and DTBO
+        run: |
+          {
+            echo "=== FILE TYPES ==="
+            file firmware/dtbo.img \
+              out/recovery/recovery_dtbo \
+              out/recovery/ramdisk \
+              out/boot/ramdisk
+            echo
+            echo "=== DTBO HEADERS ==="
+            for img in firmware/dtbo.img out/recovery/recovery_dtbo; do
+              echo "--- $img ---"
+              xxd -l 64 "$img"
+            done
+            echo
+            echo "=== RAMDISK HEADERS ==="
+            xxd -l 32 out/recovery/ramdisk
+            xxd -l 32 out/boot/ramdisk
+            echo
+            echo "=== RAMDISK HASHES ==="
+            sha256sum out/recovery/ramdisk out/boot/ramdisk
+          } | tee out/reports/image-formats.txt
+
+      - name: Extract ramdisks
+        run: |
+          mkdir -p out/ramdisk-work/recovery
+          mkdir -p out/ramdisk-work/boot
+          cd out/ramdisk-work/recovery
+          gzip -dc ../../recovery/ramdisk | cpio -idm --no-absolute-filenames
+          cd ../boot
+          gzip -dc ../../boot/ramdisk | cpio -idm --no-absolute-filenames
+          cd ../../..
+
       - name: Verify DTBO and MTK components
         run: |
           {
@@ -13,8 +135,12 @@
 
             echo
             echo "=== MTK ODM BINARIES ==="
-            find out/ramdisk-work/recovery/odm/bin \
-              -maxdepth 1 -type f -printf '%f\n' | sort
+            if [ -d out/ramdisk-work/recovery/odm/bin ]; then
+              find out/ramdisk-work/recovery/odm/bin \
+                -maxdepth 1 -type f -printf '%f\n' | sort
+            else
+              echo "ODM bin directory not found"
+            fi
 
             echo
             echo "=== MTK PATH UTILITY ==="
@@ -28,3 +154,69 @@
               out/ramdisk-work/recovery/default.prop \
               out/ramdisk-work/recovery/prop.default || true
           } | tee out/reports/next-inspection.txt
+
+      - name: Inspect recovery ramdisk
+        run: |
+          {
+            echo "=== RECOVERY FILE TREE ==="
+            find out/ramdisk-work/recovery -maxdepth 4 -type f -o -type l | sort
+            echo
+            echo "=== FULL RECOVERY FSTAB ==="
+            cat out/ramdisk-work/recovery/system/etc/recovery.fstab
+            echo
+            echo "=== RECOVERY INIT MT6765 ==="
+            cat out/ramdisk-work/recovery/init.recovery.mt6765.rc
+            echo
+            echo "=== RECOVERY INIT SAMSUNG ==="
+            cat out/ramdisk-work/recovery/init.recovery.samsung.rc
+            echo
+            echo "=== INIT MAIN ==="
+            cat out/ramdisk-work/recovery/system/etc/init/hw/init.rc
+            echo
+            echo "=== RECOVERY SELECTED PROPERTIES ==="
+            grep -E \
+              'ro.product|ro.vendor.mediatek.platform|ro.build.version|ro.crypto|ro.boot' \
+              out/ramdisk-work/recovery/default.prop || true
+            echo
+            echo "=== FSTAB AND INIT REFERENCES ==="
+            grep -RniE \
+              'userdata|metadata|vbmeta|recovery|boot|system|vendor|mount|encrypt|decrypt' \
+              out/ramdisk-work/recovery/init.recovery* \
+              out/ramdisk-work/recovery/system/etc/recovery.fstab || true
+          } | tee out/reports/recovery-ramdisk-inspection.txt
+
+      - name: Inspect ramdisk permissions
+        run: |
+          {
+            echo "=== RECOVERY DIRECTORY ==="
+            ls -ld out/ramdisk-work/recovery
+            echo
+            echo "=== DIRECTORY D ==="
+            ls -ld out/ramdisk-work/recovery/d || true
+            stat out/ramdisk-work/recovery/d || true
+            echo
+            echo "=== SYMLINKS ==="
+            find out/ramdisk-work/recovery -type l \
+              -printf '%p -> %l\n' | sort
+            echo
+            echo "=== PARENT CONTENTS ==="
+            ls -la out/ramdisk-work/recovery
+          } | tee out/reports/ramdisk-permissions.txt
+
+      - name: Package extracted recovery ramdisk
+        run: |
+          sudo tar -czf out/reports/ramdisk-extracted.tar.gz \
+            -C out/ramdisk-work recovery
+          rm -rf out/ramdisk-work
+
+      - name: Upload audit reports
+        uses: actions/upload-artifact@v5
+        with:
+          name: a12-u6-audit
+          path: |
+            firmware/
+            out/boot/
+            out/recovery/
+            out/reports/
+          if-no-files-found: error
+          retention-days: 7
