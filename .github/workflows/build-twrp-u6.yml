@@ -1,0 +1,99 @@
+
+name: Build TWRP A12 U6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/share/boost
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            repo git openjdk-11-jdk \
+            bc bison build-essential \
+            ccache curl flex g++-multilib \
+            gcc-multilib git-lfs gnupg gperf \
+            imagemagick lib32ncurses5-dev \
+            lib32readline-dev lib32z1-dev \
+            libelf-dev liblz4-tool libncurses5 \
+            libncurses5-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils \
+            lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip \
+            zlib1g-dev unzip
+
+      - name: Initialize TWRP source
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/twrp"
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          repo init --depth=1 \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+            -b twrp-12.1
+
+      - name: Clone A12 U6 device tree
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          git clone --depth=1 \
+            -b android-12.1 \
+            https://github.com/rifqiahmad2933-droid/android_device_samsung_a12.git \
+            device/samsung/a12
+
+      - name: Clone A12 kernel repository
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          git clone --depth=1 \
+            https://github.com/edward0181/android_kernel_samsung_a12.git \
+            kernel/samsung/a12
+
+      - name: Sync TWRP source
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          repo sync \
+            --no-repo-verify \
+            -c \
+            --force-sync \
+            --no-clone-bundle \
+            --no-tags \
+            --optimized-fetch \
+            --prune \
+            -j2
+
+      - name: Build recovery image
+        run: |
+          cd "$GITHUB_WORKSPACE/twrp"
+
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export USE_CCACHE=false
+
+          source build/envsetup.sh
+          lunch twrp_a12-eng
+          mka -j2 recoveryimage
+
+      - name: Upload recovery image
+        uses: actions/upload-artifact@v4
+        with:
+          name: twrp-a12-u6-build
+          path: |
+            twrp/out/target/product/a12/recovery.img
+          if-no-files-found: error
+          retention-days: 7
